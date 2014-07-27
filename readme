@@ -1,0 +1,3 @@
+To install pycurl you should have libcurl
+
+apt-get install libcurl4-gnutls-dev librtmp-dev
