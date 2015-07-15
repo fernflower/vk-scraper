@@ -1,43 +1,50 @@
-import sys
-import pycurl
 import json
+import logging
 import os
-from urllib.parse import urlparse
-from io import BytesIO
-from settings import OWNER_ID, DOMAIN, STORE_DIR, API_URL, APP_ID, APP_SECRET, \
-    AUTHORIZE_URL, REDIRECT_URI
+import sys
+
+import argparse
+
+import urllib.parse
+import urllib.request
+
+from settings import (OWNER_ID, DOMAIN, STORE_DIR, API_URL)
+
+# setup logging stuff here
+LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+logging.basicConfig(format=LOG_FORMAT, level=logging.DEBUG)
+LOG = logging.getLogger('get_data')
+fh = logging.FileHandler('scrape.log')
+fh.setFormatter(logging.Formatter(LOG_FORMAT))
+LOG.addHandler(fh)
 
 
-def get_response(url):
-    buf = BytesIO()
-    c = pycurl.Curl()
-    c.setopt(c.WRITEFUNCTION, buf.write)
-    c.setopt(c.URL, url)
-    c.setopt(c.VERBOSE, True)
-    c.setopt(pycurl.HTTPHEADER, [b'Content-Type: text/html; charset=UTF-8'])
-    c.perform()
-    result = buf.getvalue()
-    buf.close()
-    return result
+def fetch_data(url, headers=None, json_loads=False):
+    headers = headers or {}
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req) as response:
+        data = response.read()
+        if json_loads:
+            data = json.loads(data.decode('utf-8'))
+        return data
 
 
 class Post:
     def __init__(self, data):
         self.id = data['id']
         self.date = data['date']
-        self.pics = [{"name": urlparse(attach['photo']['photo_604']).path.split('/')[-1],
-                      "url": attach['photo']['photo_604']}
-                     for attach in data.get('attachments', [])
-                     if attach['type'] == 'photo']
-        self.videos = [{"owner_id": attach['video']['owner_id'],
-                        "video_id": attach['video']['id'],
-                        "access_key": attach['video']['access_key'],
-                        "title": attach['video']['title']}
-                       for attach in data.get('attachments', [])
-                       if attach['type'] == 'video']
         self.text = data['text']
+        self.pics = []
 
-    def save(self, directory, token):
+        for attach in data.get('attachments', []):
+            if attach['type'] == 'photo':
+                pic_url = attach['photo']['photo_604']
+                pic = {"name": (urllib.parse.urlparse(pic_url).
+                                path.split('/')[-1]),
+                       "url": pic_url}
+                self.pics.append(pic)
+
+    def save(self, directory):
         name = "{}_{}".format(self.id, self.date)
         dirname = os.path.join(directory, name)
         filename = os.path.join(dirname, 'text')
@@ -48,77 +55,35 @@ class Post:
         # save pictures
         for pic in self.pics:
             with open(os.path.join(dirname, pic['name']), mode='wb') as f:
-                f.write(self._fetch_img(pic['url']))
-        # save videos
-        #for video in self.videos:
-            #with open(os.path.join(dirname, 'videos'), mode='wb+') as f:
-                #f.write(self._fetch_video(video['owner_id'], video['video_id'],
-                                          #video['access_key'], token))
+                f.write(fetch_data(pic['url']))
 
     def __str__(self):
         return "Date:{}\n{}".format(self.date, self.text)
 
-    def _fetch_img(self, pic_url):
-        buf = BytesIO()
-        c = pycurl.Curl()
-        c.setopt(c.WRITEFUNCTION, buf.write)
-        c.setopt(c.URL, pic_url)
-        c.perform()
-        result = buf.getvalue()
-        buf.close()
-        return result
-
-    def _fetch_video(self, owner_id, video_id, access_key, token):
-        videos = "{}_{}_{}".format(owner_id, video_id, access_key)
-        response = get_response(API_URL.format(
-            'video.get?count=1&owner_id={}&videos={}&v=5.23&format=JSON'.
-            format(OWNER_ID, videos, token)))
+    def __repr__(self):
+        return self.__str__()
 
 
 class VkScraper:
-    def __init__(self):
-        self._token = None
-        self._app_token = None
-
-    @property
-    def token(self):
-        if not self._token:
-            r = get_response(ACCESS_TOKEN_URL.format(
-                '?client_id={}&client_secret={}&v=5.23&grant_type=client_credentials'.
-                format(APP_ID, APP_SECRET)))
-            self._token = json.loads(r.decode('utf-8'))['access_token']
-        return self._token
-
-    @property
-    def app_token(self):
-        if not self._app_token:
-            r = get_response(AUTHORIZE_URL.format(
-                '?client_id={}&scope=video&v=5.23&redirect_uri={}&response_type=token'.
-                format(APP_ID, REDIRECT_URI)))
-            # TODO FIXME how can we login user with minimum effort?
-        return self._app_token
-
-    def scrape_wall(self, count, upload_dir, offset=0, save=False):
-        buf = BytesIO()
-        c = pycurl.Curl()
-        c.setopt(c.URL, API_URL.format(
-            'wall.get?count={}&domain={}&owner_id={}&v=5.23&format=JSON&offset={}'.\
-            format(count, DOMAIN, OWNER_ID, offset)))
-        c.setopt(c.WRITEFUNCTION, buf.write)
-        c.setopt(c.VERBOSE, True)
-        c.setopt(pycurl.HTTPHEADER, [b'Content-Type: text/html; charset=UTF-8'])
-        c.perform()
-        data = json.loads(buf.getvalue().decode('utf-8'))
-        buf.close()
+    def scrape_wall(self, count, upload_dir=None, offset=0, save=False):
+        wall_url = API_URL.format('wall.get?count={}&domain={}&owner_id={}'
+                                  '&v=5.23&format=JSON&offset={}'.
+                                  format(count, DOMAIN, OWNER_ID, offset))
+        data = fetch_data(wall_url,
+                          headers={'Content-Type': 'text/html; charset=UTF-8'},
+                          json_loads=True)
         posts = [Post(d) for d in data['response']['items']]
         if save:
+            if upload_dir is None:
+                LOG.warn("Save option is specified but no upload directory "
+                         "given - scraped posts won't be saved.")
+                return posts
             if not os.path.exists(upload_dir):
+                LOG.info("Creating directory: %s" % upload_dir)
                 os.makedirs(upload_dir)
             for p in posts:
-                p.save(upload_dir, self.app_token)
-            return True
+                p.save(upload_dir)
         return posts
-
 
 
 def main():
@@ -127,15 +92,16 @@ def main():
     >>> len(scraper.scrape_wall(5))
     5
     """
-    count = sys.argv[1] if len(sys.argv) > 1 else 5
-    upload_dir = sys.argv[2] if len(sys.argv) > 2 else STORE_DIR
-    if '--offset' in sys.argv:
-        i = sys.argv.index('--offset')
-        sys.argv.pop(i)
-        offset = int(sys.argv[i])
-    else:
-        offset = 0
-    scraper.scrape_wall(count, upload_dir, offset=offset, save=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--offset', type=int, default=0,
+                        help='An offset for the first post to download.')
+    parser.add_argument('count', type=int, nargs='?', default=5,
+                        help='Number of posts to download, 5 by default.')
+    parser.add_argument('--upload-dir', default=STORE_DIR,
+                        help='Directory to store downloaded posts.')
+    parsed = parser.parse_args(sys.argv[1:])
+    scraper.scrape_wall(parsed.count, upload_dir=parsed.upload_dir,
+                        offset=parsed.offset, save=True)
 
 
 if __name__ == '__main__':

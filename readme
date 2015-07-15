@@ -1,3 +1,5 @@
-To install pycurl you should have libcurl
+Simple python 3 VK Scraper.
 
-apt-get install libcurl4-gnutls-dev librtmp-dev
+Currently is capable of scraping a public group with given id 
+(OWNER_ID in settings.py).
+Customizable parameters are: offtop, count, upload directory.

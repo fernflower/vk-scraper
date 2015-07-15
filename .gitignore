@@ -1,3 +1,5 @@
 env
 posts/
 __pycache__
+.ropeproject
+*.log
