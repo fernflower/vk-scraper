@@ -1,3 +1,4 @@
+import codecs
 import json
 import logging
 import os
@@ -16,6 +17,11 @@ LOG.addHandler(fh)
 
 
 def fetch_data(url, headers=None, json_loads=False):
+    """Bluntly fetches data by url.
+
+    If json_loads is True the data is converted to json,
+    else bytes object is returned.
+    """
     headers = headers or {}
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req) as response:
@@ -46,12 +52,18 @@ class Post:
         filename = os.path.join(dirname, 'text')
         if not os.path.exists(dirname):
             os.makedirs(dirname)
-        with open(filename, mode='w') as f:
+        with codecs.open(filename, 'w', 'utf-8') as f:
             f.write(self.text)
         # save pictures
         for pic in self.pics:
             with open(os.path.join(dirname, pic['name']), mode='wb') as f:
                 f.write(fetch_data(pic['url']))
+
+    def to_json(self):
+        return {'id': self.id,
+                'date': self.date,
+                'text': self.text,
+                'pics': self.pics}
 
     def __str__(self):
         return "Date:{}\n{}".format(self.date, self.text)
